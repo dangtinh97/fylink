@@ -142,9 +142,10 @@ export class WebRTCManager {
       message: `Đang kết nối tới thiết bị ${this.remotePeerCode}...`
     });
 
-    // Quan trọng: KHÔNG truyền serialization: 'none' để tránh lỗi constructor trong PeerJS!
+    // Sử dụng 'raw' để truyền trực tiếp ArrayBuffer nhị phân và chuỗi JSON không qua BinaryPack
     const conn = this.peer.connect(targetPeerId, {
-      reliable: true
+      reliable: true,
+      serialization: 'raw'
     });
 
     this.setupConnection(conn);
@@ -168,18 +169,22 @@ export class WebRTCManager {
       clearTimeout(connTimeout);
       console.log('[WebRTC] Kết nối DataChannel đã mở với:', conn.peer);
 
+      if (conn.dataChannel) {
+        conn.dataChannel.binaryType = 'arraybuffer';
+      }
+
       // Trích xuất mã 6 ký tự của bên kia
       const remoteRawCode = conn.peer.replace(/^fyl-/, '').toUpperCase();
       this.remotePeerCode = remoteRawCode;
 
-      // Gửi thông tin chào hỏi ban đầu (tên thiết bị)
+      // Gửi thông tin chào hỏi ban đầu (tên thiết bị) dạng chuỗi JSON
       try {
-        conn.send({
+        conn.send(JSON.stringify({
           type: 'session:init',
           deviceName: this.deviceName,
           code: this.myCode,
           timestamp: Date.now()
-        });
+        }));
       } catch (e) {
         console.warn('Lỗi gửi session:init:', e);
       }

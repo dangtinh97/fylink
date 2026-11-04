@@ -182,7 +182,8 @@ export class TransferCoordinator {
       console.warn('[Protocol] Kết nối chưa mở, không thể gửi:', type);
       return;
     }
-    this.conn.send({ type, timestamp: Date.now(), ...payload });
+    const msg = JSON.stringify({ type, timestamp: Date.now(), ...payload });
+    this.conn.send(msg);
   }
 
   async handleMessage(msg) {
