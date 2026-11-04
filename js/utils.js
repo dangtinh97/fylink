@@ -2,7 +2,6 @@
  * Fylink - Utility Functions
  * Helper functions for formatting, hashing, device naming, and validation.
  */
-
 // List of friendly adjectives and nouns for auto-generating device names
 const ADJECTIVES = [
   'Swift', 'Cosmic', 'Silent', 'Golden', 'Brave', 'Clever', 'Agile', 'Bright',
