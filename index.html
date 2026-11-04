@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="vi" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fylink — Share anything. Instantly.</title>
+  <meta name="description" content="Chia sẻ file, văn bản, ảnh, liên kết và video trực tiếp giữa các thiết bị cùng mạng Wi-Fi/LAN. Không cần tài khoản.">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m22 2-7 20-4-9-9-4Z'/><path d='M22 2 11 13'/></svg>">
+  
+  <!-- PeerJS WebRTC P2P Signaling -->
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <!-- QRCode.js Generator -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <a href="#" class="brand-container" id="brand-link">
+        <div class="brand-logo-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m22 2-7 20-4-9-9-4Z"/>
+            <path d="M22 2 11 13"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">Fylink</h1>
+        </div>
+      </a>
+
+      <div class="header-actions">
+        <!-- My Device Chip -->
+        <button class="device-chip" id="device-chip" title="Bấm để đổi tên thiết bị">
+          <span class="device-dot"></span>
+          <span id="device-name-display">Đang tạo...</span>
+        </button>
+
+        <!-- My Code Chip (Always visible on header) -->
+        <button class="device-chip code-chip" id="header-code-chip" title="Bấm để sao chép mã của bạn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+          Mã: <strong id="header-code-display">------</strong>
+        </button>
+
+        <!-- Theme Toggle -->
+        <button class="icon-btn" id="theme-toggle" title="Đổi giao diện Sáng/Tối" aria-label="Toggle Theme">
+          <svg id="theme-icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>
+          </svg>
+          <svg id="theme-icon-moon" class="hidden" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Hero / Tagline -->
+    <section class="hero">
+      <h2 class="hero-title">Share anything, instantly.</h2>
+      <p class="hero-subtitle">Gửi file, văn bản, ảnh, liên kết và video trực tiếp giữa các thiết bị.</p>
+      <div class="wifi-hint">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+        Ưu tiên cùng mạng Wi-Fi/LAN để đạt tốc độ truyền P2P nhanh nhất
+      </div>
+    </section>
+
+    <!-- ==================== SCREEN 1: DISCOVERY & CONNECT ==================== -->
+    <main id="discovery-screen">
+      <div class="two-col-grid">
+        <!-- Cột 1: Thông tin của thiết bị này -->
+        <section class="card text-center">
+          <div class="card-badge">Thiết bị của bạn</div>
+          <h3 style="font-weight:700; margin: 0.5rem 0 0.25rem;">Mã nhận kết nối</h3>
+          <p class="text-muted" style="font-size:0.8125rem; margin-bottom:1rem;">
+            Cho người khác xem mã hoặc quét QR để bắt tay
+          </p>
+
+          <!-- QR Code của thiết bị này -->
+          <div class="qr-wrapper" id="my-qr-container"></div>
+
+          <!-- Mã hiển thị to rõ -->
+          <div class="code-display" id="my-code-display-box">
+            <span id="my-code-text">------</span>
+            <button class="copy-mini-btn" id="btn-copy-my-code" title="Sao chép mã">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+              </svg>
+            </button>
+          </div>
+
+          <div style="font-size:0.8125rem; color:var(--success); font-weight:500; display:flex; align-items:center; justify-content:center; gap:0.35rem;">
+            <span class="device-dot"></span> Sẵn sàng kết nối
+          </div>
+        </section>
+
+        <!-- Cột 2: Kết nối tới thiết bị khác -->
+        <section class="card">
+          <div class="card-badge">Kết nối thiết bị</div>
+          <h3 style="font-weight:700; margin: 0.5rem 0 0.25rem;">Nhập mã thiết bị khác</h3>
+          <p class="text-muted" style="font-size:0.8125rem; margin-bottom:1.25rem;">
+            Nhập 6 số hiển thị trên màn hình của máy cần gửi/nhận
+          </p>
+
+          <div class="code-input-group">
+            <input type="tel" inputmode="numeric" pattern="[0-9]*" class="code-input" id="target-code-input" maxlength="6" placeholder="000000" autocomplete="off" spellcheck="false">
+          </div>
+
+          <button class="btn-primary" id="btn-connect-target" disabled>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>
+            </svg>
+            Bắt tay kết nối
+          </button>
+
+          <!-- Trạng thái kết nối -->
+          <div class="status-badge connecting hidden mt-4" id="discovery-status-badge">
+            <span class="pulse-dot"></span>
+            <span id="discovery-status-text">Đang kết nối...</span>
+          </div>
+
+          <!-- Lỗi hướng dẫn -->
+          <div class="diagnostic-box hidden" id="discovery-error-box">
+            <h4>Không thể kết nối</h4>
+            <p id="discovery-error-message"></p>
+            <ul>
+              <li>Kiểm tra lại mã và đảm bảo thiết bị kia đang mở Fylink.</li>
+              <li>Tắt VPN hoặc cách ly mạng khách (Guest Wi-Fi).</li>
+            </ul>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- ==================== SCREEN 2: CONNECTED TWO-WAY SESSION ==================== -->
+    <main class="hidden" id="session-screen">
+      <!-- Session Bar -->
+      <div class="session-connected-bar">
+        <div class="connected-info">
+          <span class="device-dot"></span>
+          <span>Đã kết nối với <strong id="peer-device-name">Thiết bị</strong> (<span id="peer-device-code">------</span>)</span>
+        </div>
+        <button class="btn-secondary btn-danger btn-sm" id="btn-disconnect">Ngắt kết nối</button>
+      </div>
+
+      <!-- Consent Modal (Khi đối phương gửi nội dung tới) -->
+      <div class="consent-banner hidden" id="consent-banner">
+        <div class="consent-avatar">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </div>
+        <div class="consent-content">
+          <h4 id="consent-title">Đối phương muốn chia sẻ nội dung</h4>
+          <p id="consent-desc">1 file (2.4 MB)</p>
+        </div>
+        <div class="consent-actions">
+          <button class="btn-secondary btn-danger btn-sm" id="btn-consent-reject">Từ chối</button>
+          <button class="btn-primary btn-sm" id="btn-consent-accept">Chấp nhận</button>
+        </div>
+      </div>
+
+      <!-- Progress Card (Hiển thị khi đang truyền/nhận) -->
+      <div class="card hidden" id="transfer-progress-card">
+        <div class="progress-info">
+          <span id="transfer-status-label">Đang truyền dữ liệu...</span>
+          <span id="transfer-progress-percent">0%</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" id="transfer-progress-bar"></div>
+        </div>
+        <div class="transfer-metrics">
+          <span id="transfer-metrics-speed">0 KB/s</span>
+          <span id="transfer-metrics-bytes">0 B / 0 B</span>
+          <span id="transfer-metrics-eta">ETA: --</span>
+        </div>
+      </div>
+
+      <!-- Received Content Area -->
+      <div class="card hidden" id="received-content-card">
+        <h3 style="font-weight:700; margin-bottom:1rem;">Nội dung vừa nhận được</h3>
+
+        <!-- Text Result -->
+        <div class="hidden mb-4" id="received-text-box">
+          <div class="received-text-content" id="received-text-body"></div>
+          <button class="btn-secondary" id="btn-copy-received-text">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            Sao chép văn bản
+          </button>
+        </div>
+
+        <!-- Link Result -->
+        <div class="hidden mb-4" id="received-link-box">
+          <div class="received-link-card">
+            <span class="domain-pill" id="received-link-domain">domain.com</span>
+            <a href="#" target="_blank" rel="noopener noreferrer" id="received-link-url" style="color:var(--primary); font-weight:500; word-break:break-all;"></a>
+          </div>
+          <a href="#" target="_blank" rel="noopener noreferrer" class="btn-primary" id="btn-open-received-link" style="text-decoration:none;">
+            Mở liên kết trong tab mới
+          </a>
+        </div>
+
+        <!-- Files Result -->
+        <div class="hidden" id="received-files-box">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+            <span style="font-weight:600;">Danh sách tệp (<span id="received-files-count">0</span>):</span>
+            <button class="btn-secondary btn-sm" id="btn-download-all">Tải tất cả</button>
+          </div>
+          <div class="media-gallery" id="received-media-gallery"></div>
+          <div class="preview-list" id="received-files-list"></div>
+        </div>
+      </div>
+
+      <!-- Content Composer (Gửi nội dung sang máy kia) -->
+      <section class="card" id="composer-card">
+        <h3 style="font-weight:700; margin-bottom:1rem;">Gửi nội dung sang đối phương</h3>
+
+        <!-- Content Type Tabs -->
+        <div class="content-tabs" role="tablist">
+          <button class="tab-btn active" role="tab" data-tab="files">Files</button>
+          <button class="tab-btn" role="tab" data-tab="text">Text</button>
+          <button class="tab-btn" role="tab" data-tab="image">Image</button>
+          <button class="tab-btn" role="tab" data-tab="link">Link</button>
+          <button class="tab-btn" role="tab" data-tab="video">Video</button>
+        </div>
+
+        <!-- 1. Files Panel -->
+        <div class="composer-panel active" id="panel-files">
+          <div class="dropzone" id="dropzone-files">
+            <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <div class="dropzone-title">Kéo thả file vào đây hoặc bấm để chọn</div>
+            <div class="dropzone-desc">Gửi một hoặc nhiều file bất kỳ không giới hạn dung lượng</div>
+            <input type="file" id="file-input" multiple style="display:none">
+          </div>
+        </div>
+
+        <!-- 2. Text Panel -->
+        <div class="composer-panel" id="panel-text">
+          <div class="text-composer">
+            <textarea id="text-input" placeholder="Nhập hoặc dán văn bản, ghi chú, mã nguồn vào đây..."></textarea>
+            <div class="composer-meta">
+              <span id="text-char-count">0 ký tự</span>
+              <span id="text-byte-count">0 B</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Image Panel -->
+        <div class="composer-panel" id="panel-image">
+          <div class="dropzone" id="dropzone-image">
+            <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+            </svg>
+            <div class="dropzone-title">Thả ảnh vào đây hoặc dán từ clipboard (Ctrl+V)</div>
+            <div class="dropzone-desc">Xem trước ảnh thumbnail trực tiếp trước khi gửi</div>
+            <input type="file" id="image-input" accept="image/*" multiple style="display:none">
+          </div>
+        </div>
+
+        <!-- 4. Link Panel -->
+        <div class="composer-panel" id="panel-link">
+          <div class="input-group">
+            <input type="url" class="text-input" id="link-input" placeholder="Dán liên kết (ví dụ: https://example.com)...">
+          </div>
+          <div class="link-preview-box hidden" id="link-preview-box">
+            <span class="domain-pill" id="link-domain-badge">domain.com</span>
+            <span id="link-preview-url" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.875rem;"></span>
+          </div>
+        </div>
+
+        <!-- 5. Video Panel -->
+        <div class="composer-panel" id="panel-video">
+          <div class="dropzone" id="dropzone-video">
+            <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="23 7 16 12 23 17 23 7"/><rect width="14" height="14" x="1" y="5" rx="2" ry="2"/>
+            </svg>
+            <div class="dropzone-title">Thả video vào đây hoặc chọn file</div>
+            <div class="dropzone-desc">Tự trích xuất thumbnail và thời lượng video an toàn</div>
+            <input type="file" id="video-input" accept="video/*" multiple style="display:none">
+          </div>
+        </div>
+
+        <!-- Preview Staged Items -->
+        <div class="preview-section hidden" id="preview-section">
+          <div class="preview-header">
+            <span>Sẵn sàng gửi (<span id="preview-item-count">0</span>)</span>
+            <span id="preview-total-size" class="text-muted">0 B</span>
+          </div>
+          <div class="preview-list" id="preview-list"></div>
+        </div>
+
+        <!-- Send Button -->
+        <div class="mt-4">
+          <button class="btn-primary" id="btn-send-content" disabled>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>
+            </svg>
+            Gửi ngay tới đối phương
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Modal Rename Device -->
+    <div class="modal-overlay" id="rename-modal" role="dialog" aria-modal="true">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 class="modal-title">Đổi tên thiết bị</h3>
+          <button class="btn-remove" id="btn-close-rename">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:1rem;">
+          <input type="text" class="text-input" id="input-device-name" maxlength="32" placeholder="Ví dụ: Laptop Dell">
+          <button class="btn-primary" id="btn-save-device-name">Lưu tên</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div class="toast-container" id="toast-container" aria-live="polite"></div>
+  </div>
+
+  <!-- App Logic -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
