@@ -8,7 +8,6 @@ import { calculateSha256 } from './utils.js';
 export const CHUNK_SIZE = 64 * 1024; // 64 KB per chunk
 export const MAX_BUFFERED_AMOUNT = 1024 * 1024; // 1 MB buffer limit before applying backpressure
 export const PACKET_MAGIC = 0x46594C4B; // "FYLK" in hex
-
 export const PROTOCOL_TYPES = {
   SESSION_INIT: 'session:init',
   CONTENT_OFFER: 'content:offer',
