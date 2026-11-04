@@ -641,6 +641,8 @@ function sendActiveContent() {
     itemsSummary: []
   };
 
+  let localFiles = [];
+
   if (state.activeTab === 'text') {
     const text = DOM.textInput.value;
     const bytes = new TextEncoder().encode(text).length;
@@ -656,10 +658,11 @@ function sendActiveContent() {
   } else {
     offer.totalSize = state.stagedItems.reduce((acc, cur) => acc + cur.size, 0);
     offer.itemCount = state.stagedItems.length;
-    offer.files = state.stagedItems;
+    offer.itemsSummary = state.stagedItems.map(i => ({ name: i.name, size: i.size, type: i.type }));
+    localFiles = [...state.stagedItems];
   }
 
-  state.coordinator.sendOffer(offer);
+  state.coordinator.sendOffer(offer, localFiles);
   showToast('Đang chờ đối phương chấp nhận...');
 }
 

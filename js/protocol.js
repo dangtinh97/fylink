@@ -48,11 +48,30 @@ export function createBinaryChunkPacket(fileIndex, chunkIndex, chunkArrayBuffer)
   return packetBuffer;
 }
 
-export function parseBinaryChunkPacket(arrayBuffer) {
+/**
+ * Parses binary chunk packet from ArrayBuffer, Uint8Array or any TypedArray
+ */
+export function parseBinaryChunkPacket(bufferOrView) {
+  let arrayBuffer;
+  if (bufferOrView instanceof ArrayBuffer) {
+    arrayBuffer = bufferOrView;
+  } else if (ArrayBuffer.isView(bufferOrView)) {
+    // Trích xuất buffer chính xác từ Uint8Array hoặc DataView
+    arrayBuffer = bufferOrView.buffer.slice(
+      bufferOrView.byteOffset,
+      bufferOrView.byteOffset + bufferOrView.byteLength
+    );
+  } else {
+    return null;
+  }
+
   if (arrayBuffer.byteLength < 16) return null;
   const dataView = new DataView(arrayBuffer);
   const magic = dataView.getUint32(0, false);
-  if (magic !== PACKET_MAGIC) return null;
+  if (magic !== PACKET_MAGIC) {
+    console.warn('[Protocol] Magic header không khớp:', magic.toString(16));
+    return null;
+  }
 
   const fileIndex = dataView.getUint32(4, false);
   const chunkIndex = dataView.getUint32(8, false);
@@ -65,7 +84,6 @@ export function parseBinaryChunkPacket(arrayBuffer) {
 export class TransferCoordinator {
   constructor(peerConnection, options = {}) {
     this.conn = peerConnection;
-    this.dc = peerConnection.dataChannel || null;
     this.options = options;
     this.myDeviceName = options.myDeviceName || 'My Device';
 
@@ -83,6 +101,8 @@ export class TransferCoordinator {
     this.isCancelled = false;
 
     // Sender metrics
+    this.outContentData = null;
+    this.outLocalFiles = [];
     this.outTotalBytes = 0;
     this.outTransferredBytes = 0;
     this.outStartTime = 0;
@@ -109,18 +129,41 @@ export class TransferCoordinator {
     if (!this.conn) return;
 
     this.conn.on('data', async (data) => {
+      // 1. Dữ liệu nhị phân: Blob
+      if (data instanceof Blob) {
+        try {
+          const ab = await data.arrayBuffer();
+          this.handleBinaryChunk(ab);
+        } catch (e) {
+          console.error('[Protocol] Lỗi đọc Blob chunk:', e);
+        }
+        return;
+      }
+
+      // 2. Dữ liệu nhị phân: ArrayBuffer hoặc Uint8Array/TypedArray
+      if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+        this.handleBinaryChunk(data);
+        return;
+      }
+
+      // 3. Tin nhắn dạng chuỗi JSON
       if (typeof data === 'string') {
         try {
           const parsed = JSON.parse(data);
           await this.handleMessage(parsed);
         } catch {
-          // raw string
+          // chuỗi thuần
         }
-      } else if (typeof data === 'object' && !(data instanceof ArrayBuffer)) {
-        await this.handleMessage(data);
-      } else if (data instanceof ArrayBuffer) {
-        this.handleBinaryChunk(data);
+        return;
       }
+
+      // 4. Tin nhắn dạng Object điều khiển (phải có thuộc tính .type)
+      if (data && typeof data === 'object' && typeof data.type === 'string') {
+        await this.handleMessage(data);
+        return;
+      }
+
+      console.warn('[Protocol] Bỏ qua gói tin không nhận diện được:', typeof data, data);
     });
 
     this.conn.on('close', () => {
@@ -196,6 +239,7 @@ export class TransferCoordinator {
         break;
 
       case PROTOCOL_TYPES.FILE_META:
+        console.log('[Protocol] Bắt đầu nhận file:', msg.name, 'Kích thước dự kiến:', msg.size, 'Chunks:', msg.totalChunks);
         this.inCurrentFile = msg;
         this.inChunks = [];
         this.inBytesCurrentFile = 0;
@@ -229,10 +273,10 @@ export class TransferCoordinator {
     }
   }
 
-  handleBinaryChunk(arrayBuffer) {
-    const packet = parseBinaryChunkPacket(arrayBuffer);
+  handleBinaryChunk(bufferOrView) {
+    const packet = parseBinaryChunkPacket(bufferOrView);
     if (!packet) {
-      console.error('[Protocol] Gói nhị phân không hợp lệ');
+      console.error('[Protocol] Gói nhị phân không hợp lệ hoặc sai định dạng');
       return;
     }
 
@@ -278,8 +322,10 @@ export class TransferCoordinator {
       type: this.inCurrentFile.mimeType || 'application/octet-stream'
     });
 
+    console.log(`[Protocol] Nhận xong file "${this.inCurrentFile.name}": ${this.inChunks.length} chunks, tổng ${blob.size} bytes`);
+
     let checksumValid = true;
-    if (this.inCurrentFile.checksum) {
+    if (this.inCurrentFile.checksum && blob.size > 0) {
       try {
         const buffer = await blob.arrayBuffer();
         const calculatedHash = await calculateSha256(buffer);
@@ -294,7 +340,7 @@ export class TransferCoordinator {
 
     this.inFiles.push({
       name: this.inCurrentFile.name,
-      size: this.inCurrentFile.size,
+      size: blob.size > 0 ? blob.size : (this.inCurrentFile.size || 0),
       mimeType: this.inCurrentFile.mimeType,
       blob,
       url: URL.createObjectURL(blob),
@@ -316,14 +362,19 @@ export class TransferCoordinator {
   /**
    * Bắt đầu gửi nội dung tới đối phương
    */
-  sendOffer(contentData) {
+  sendOffer(contentData, localFiles = []) {
     this.outContentData = contentData;
+    this.outLocalFiles = localFiles && localFiles.length > 0 ? localFiles : (contentData.files || []);
     this.outTotalBytes = contentData.totalSize || 0;
     this.outTransferredBytes = 0;
     this.isSending = true;
     this.isCancelled = false;
     this.onStatusChange('offered');
-    this.sendMessage(PROTOCOL_TYPES.CONTENT_OFFER, contentData);
+
+    // Không chuyển object DOM File qua mạng để tránh lỗi serialization
+    const networkOffer = { ...contentData };
+    delete networkOffer.files;
+    this.sendMessage(PROTOCOL_TYPES.CONTENT_OFFER, networkOffer);
   }
 
   acceptOffer() {
@@ -375,8 +426,8 @@ export class TransferCoordinator {
       return;
     }
 
-    // Gửi binary file/ảnh/video
-    const files = this.outContentData.files || [];
+    // Gửi binary file/ảnh/video từ danh sách local
+    const files = this.outLocalFiles || [];
     for (let fIdx = 0; fIdx < files.length; fIdx++) {
       if (this.isCancelled) break;
       const fileItem = files[fIdx];
@@ -385,12 +436,19 @@ export class TransferCoordinator {
   }
 
   async sendFileItem(fileItem, fileIndex, isLastFile) {
-    const file = fileItem.file;
+    const file = fileItem.file || fileItem;
+    if (!file) {
+      console.error('[Protocol] Tệp tin không tồn tại để gửi:', fileItem);
+      return;
+    }
+
     const fileSize = file.size;
     const totalChunks = Math.ceil(fileSize / CHUNK_SIZE) || 1;
 
+    console.log(`[Protocol] Bắt đầu gửi file "${fileItem.name || file.name}": dung lượng ${fileSize} bytes, ${totalChunks} chunks`);
+
     let checksum = null;
-    if (fileSize <= 100 * 1024 * 1024) {
+    if (fileSize <= 100 * 1024 * 1024 && fileSize > 0) {
       try {
         const buffer = await file.arrayBuffer();
         checksum = await calculateSha256(buffer);
@@ -420,7 +478,12 @@ export class TransferCoordinator {
       const chunkBuffer = await sliceBlob.arrayBuffer();
 
       const packet = createBinaryChunkPacket(fileIndex, chunkIndex, chunkBuffer);
-      this.conn.send(packet);
+      
+      try {
+        this.conn.send(packet);
+      } catch (e) {
+        console.error('[Protocol] Lỗi gửi chunk qua DataChannel:', e);
+      }
 
       const chunkLen = chunkBuffer.byteLength;
       offset += chunkLen;
