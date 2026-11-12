@@ -10,7 +10,7 @@ import {
   formatSpeed,
   formatDuration,
   extractDomain,
-  sanitizeFilename,
+  deduplicateFilename,
   generateImageThumbnail,
   generateVideoThumbnail,
   copyToClipboard
@@ -28,7 +28,9 @@ const state = {
   stagedItems: [],
   webrtc: null,
   coordinator: null,
-  remotePeerInfo: null
+  remotePeerInfo: null,
+  lightboxImages: [],
+  lightboxIndex: 0
 };
 
 localStorage.setItem('fylink_device_name', state.deviceName);
@@ -113,7 +115,10 @@ const DOM = {
   previewSection: document.getElementById('preview-section'),
   previewItemCount: document.getElementById('preview-item-count'),
   previewTotalSize: document.getElementById('preview-total-size'),
+  previewImageGrid: document.getElementById('preview-image-grid'),
   previewList: document.getElementById('preview-list'),
+  btnAddMore: document.getElementById('btn-add-more'),
+  btnClearStaged: document.getElementById('btn-clear-staged'),
   btnSendContent: document.getElementById('btn-send-content'),
 
   // Modals & Toast
@@ -121,6 +126,13 @@ const DOM = {
   btnCloseRename: document.getElementById('btn-close-rename'),
   inputDeviceName: document.getElementById('input-device-name'),
   btnSaveDeviceName: document.getElementById('btn-save-device-name'),
+  lightboxModal: document.getElementById('lightbox-modal'),
+  btnCloseLightbox: document.getElementById('btn-close-lightbox'),
+  btnLightboxPrev: document.getElementById('btn-lightbox-prev'),
+  btnLightboxNext: document.getElementById('btn-lightbox-next'),
+  lightboxImg: document.getElementById('lightbox-img'),
+  lightboxCaption: document.getElementById('lightbox-caption'),
+  lightboxDownload: document.getElementById('lightbox-download'),
   toastContainer: document.getElementById('toast-container')
 };
 
@@ -194,15 +206,21 @@ function switchTab(tabId) {
   DOM.composerPanels.forEach(panel => {
     panel.classList.toggle('active', panel.id === `panel-${tabId}`);
   });
+  renderPreviewList();
   updateComposerState();
 }
 
 async function addFiles(fileList) {
+  const existingNames = new Set(state.stagedItems.map(i => i.name));
+
   for (const file of fileList) {
+    const rawName = file.name || (file.type.startsWith('image/') ? 'image.png' : 'unnamed-file');
+    const uniqueName = deduplicateFilename(rawName, existingNames);
+
     const item = {
       id: Math.random().toString(36).substring(2, 9),
       file,
-      name: sanitizeFilename(file.name),
+      name: uniqueName,
       size: file.size,
       type: file.type || 'application/octet-stream'
     };
@@ -239,9 +257,18 @@ function removeStagedItem(id) {
   updateComposerState();
 }
 
+function clearStagedItems() {
+  state.stagedItems = [];
+  renderPreviewList();
+  updateComposerState();
+}
+
 function renderPreviewList() {
-  if (state.stagedItems.length === 0) {
+  const isFileBasedTab = state.activeTab === 'files' || state.activeTab === 'image' || state.activeTab === 'video';
+  if (state.stagedItems.length === 0 || !isFileBasedTab) {
     DOM.previewSection.classList.add('hidden');
+    DOM.previewImageGrid.classList.add('hidden');
+    DOM.previewImageGrid.innerHTML = '';
     DOM.previewList.innerHTML = '';
     return;
   }
@@ -252,8 +279,42 @@ function renderPreviewList() {
   const totalBytes = state.stagedItems.reduce((acc, cur) => acc + cur.size, 0);
   DOM.previewTotalSize.textContent = formatBytes(totalBytes);
 
+  if (DOM.btnAddMore) {
+    DOM.btnAddMore.textContent = state.activeTab === 'image' ? '+ Thêm ảnh' : '+ Thêm tệp';
+  }
+
+  DOM.previewImageGrid.innerHTML = '';
   DOM.previewList.innerHTML = '';
-  state.stagedItems.forEach(item => {
+
+  const imageItems = state.activeTab === 'image'
+    ? state.stagedItems.filter(i => i.mediaType === 'image' && i.thumbnail)
+    : [];
+  const listItems = state.activeTab === 'image'
+    ? state.stagedItems.filter(i => !(i.mediaType === 'image' && i.thumbnail))
+    : state.stagedItems;
+
+  if (imageItems.length > 0) {
+    DOM.previewImageGrid.classList.remove('hidden');
+    imageItems.forEach(item => {
+      const card = document.createElement('div');
+      card.className = 'preview-image-card';
+      card.innerHTML = `
+        <img src="${item.thumbnail}" alt="${item.name}" title="${item.name}">
+        <button type="button" class="preview-image-remove" title="Xóa ảnh">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <div class="preview-image-badge">${formatBytes(item.size)}</div>
+      `;
+      card.querySelector('.preview-image-remove').addEventListener('click', () => removeStagedItem(item.id));
+      DOM.previewImageGrid.appendChild(card);
+    });
+  } else {
+    DOM.previewImageGrid.classList.add('hidden');
+  }
+
+  DOM.previewList.classList.toggle('hidden', listItems.length === 0);
+
+  listItems.forEach(item => {
     const el = document.createElement('div');
     el.className = 'preview-item';
 
@@ -470,7 +531,8 @@ function setupCoordinator(conn) {
       } else if (offer.contentType === 'link') {
         summary = `Liên kết: ${offer.domain || 'External link'}`;
       } else {
-        summary = `${offer.itemCount} ${offer.contentType} (${formatBytes(offer.totalSize)})`;
+        const typeLabel = offer.contentType === 'image' ? 'ảnh' : (offer.contentType === 'video' ? 'video' : 'tệp');
+        summary = `${offer.itemCount} ${typeLabel} (${formatBytes(offer.totalSize)})`;
       }
       DOM.consentDesc.textContent = summary;
     },
@@ -493,7 +555,10 @@ function setupCoordinator(conn) {
     },
     onProgress: (m) => {
       DOM.transferProgressCard.classList.remove('hidden');
-      DOM.transferStatusLabel.textContent = m.mode === 'sending' ? `Đang gửi: ${m.fileName}` : `Đang nhận: ${m.fileName}`;
+      const countPrefix = m.totalFiles > 1 ? ` (${(m.fileIndex ?? 0) + 1}/${m.totalFiles})` : '';
+      DOM.transferStatusLabel.textContent = m.mode === 'sending'
+        ? `Đang gửi${countPrefix}: ${m.fileName}`
+        : `Đang nhận${countPrefix}: ${m.fileName}`;
       DOM.transferProgressPercent.textContent = `${Math.round(m.totalProgress)}%`;
       DOM.transferProgressBar.style.width = `${m.totalProgress}%`;
       DOM.transferMetricsSpeed.textContent = formatSpeed(m.speed);
@@ -515,6 +580,9 @@ function setupCoordinator(conn) {
 
       // Display Received Content
       DOM.receivedContentCard.classList.remove('hidden');
+      DOM.receivedTextBox.classList.add('hidden');
+      DOM.receivedLinkBox.classList.add('hidden');
+      DOM.receivedFilesBox.classList.add('hidden');
 
       if (result.type === 'text') {
         DOM.receivedTextBox.classList.remove('hidden');
@@ -532,22 +600,30 @@ function setupCoordinator(conn) {
       } else if (result.files && result.files.length > 0) {
         DOM.receivedFilesBox.classList.remove('hidden');
         DOM.receivedFilesCount.textContent = result.files.length;
+        DOM.btnDownloadAll.textContent = result.files.length > 1
+          ? `Tải tất cả (${result.files.length})`
+          : 'Tải về';
         DOM.receivedMediaGallery.innerHTML = '';
         DOM.receivedFilesList.innerHTML = '';
 
+        const receivedImages = result.files.filter(f => f.mimeType.startsWith('image/'));
         const hasMedia = result.files.some(f => f.mimeType.startsWith('image/') || f.mimeType.startsWith('video/'));
         DOM.receivedMediaGallery.style.display = hasMedia ? 'grid' : 'none';
 
         result.files.forEach(fileItem => {
           if (fileItem.mimeType.startsWith('image/')) {
+            const imgIdx = receivedImages.indexOf(fileItem);
             const el = document.createElement('div');
             el.className = 'media-card';
             el.innerHTML = `
-              <img src="${fileItem.url}" alt="${fileItem.name}">
+              <img src="${fileItem.url}" alt="${fileItem.name}" title="Bấm để xem ảnh lớn">
               <div class="media-card-footer">
                 <a href="${fileItem.url}" download="${fileItem.name}" class="btn-secondary btn-sm" style="width:100%; text-decoration:none;">Tải về</a>
               </div>
             `;
+            el.querySelector('img').addEventListener('click', () => {
+              openLightbox(receivedImages, imgIdx);
+            });
             DOM.receivedMediaGallery.appendChild(el);
           } else if (fileItem.mimeType.startsWith('video/')) {
             const el = document.createElement('div');
@@ -768,6 +844,28 @@ function initEvents() {
   setupDropzone(DOM.dropzoneImage, DOM.imageInput, 'image');
   setupDropzone(DOM.dropzoneVideo, DOM.videoInput, 'video');
 
+  // Preview actions (+ Thêm / Xóa hết)
+  DOM.btnAddMore.addEventListener('click', () => {
+    if (state.activeTab === 'image') DOM.imageInput.click();
+    else if (state.activeTab === 'video') DOM.videoInput.click();
+    else DOM.fileInput.click();
+  });
+  DOM.btnClearStaged.addEventListener('click', clearStagedItems);
+
+  // Lightbox controls
+  DOM.btnCloseLightbox.addEventListener('click', closeLightbox);
+  DOM.btnLightboxPrev.addEventListener('click', () => stepLightbox(-1));
+  DOM.btnLightboxNext.addEventListener('click', () => stepLightbox(1));
+  DOM.lightboxModal.addEventListener('click', (e) => {
+    if (e.target === DOM.lightboxModal) closeLightbox();
+  });
+  window.addEventListener('keydown', (e) => {
+    if (!DOM.lightboxModal.classList.contains('active')) return;
+    if (e.key === 'Escape') closeLightbox();
+    else if (e.key === 'ArrowLeft') stepLightbox(-1);
+    else if (e.key === 'ArrowRight') stepLightbox(1);
+  });
+
   // Send Action
   DOM.btnSendContent.addEventListener('click', sendActiveContent);
 
@@ -778,6 +876,40 @@ function initEvents() {
   DOM.btnConsentReject.addEventListener('click', () => {
     if (state.coordinator) state.coordinator.rejectOffer();
   });
+}
+
+function openLightbox(images, index = 0) {
+  if (!images || images.length === 0) return;
+  state.lightboxImages = images;
+  state.lightboxIndex = index;
+  renderLightbox();
+  DOM.lightboxModal.classList.add('active');
+}
+
+function closeLightbox() {
+  DOM.lightboxModal.classList.remove('active');
+}
+
+function stepLightbox(delta) {
+  const total = state.lightboxImages.length;
+  if (total <= 1) return;
+  state.lightboxIndex = (state.lightboxIndex + delta + total) % total;
+  renderLightbox();
+}
+
+function renderLightbox() {
+  const total = state.lightboxImages.length;
+  const current = state.lightboxImages[state.lightboxIndex];
+  if (!current) return;
+
+  DOM.lightboxImg.src = current.url;
+  DOM.lightboxImg.alt = current.name;
+  DOM.lightboxCaption.textContent = `${current.name} • ${formatBytes(current.size)}${total > 1 ? ` (${state.lightboxIndex + 1}/${total})` : ''}`;
+  DOM.lightboxDownload.href = current.url;
+  DOM.lightboxDownload.download = current.name;
+
+  DOM.btnLightboxPrev.classList.toggle('hidden', total <= 1);
+  DOM.btnLightboxNext.classList.toggle('hidden', total <= 1);
 }
 
 // Initial Boot

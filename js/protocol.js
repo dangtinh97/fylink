@@ -114,12 +114,12 @@ export class TransferCoordinator {
     this.inTotalBytes = 0;
     this.inTransferredBytes = 0;
     this.inFiles = [];
+    this.inFileStates = new Map();
     this.inCurrentFile = null;
-    this.inChunks = [];
-    this.inBytesCurrentFile = 0;
     this.inLastSpeedUpdate = 0;
     this.inBytesSinceLastSpeed = 0;
     this.inCurrentSpeed = 0;
+    this._receiveQueue = Promise.resolve();
 
     this.setupListeners();
   }
@@ -127,42 +127,13 @@ export class TransferCoordinator {
   setupListeners() {
     if (!this.conn) return;
 
-    this.conn.on('data', async (data) => {
-      // 1. Dữ liệu nhị phân: Blob
-      if (data instanceof Blob) {
-        try {
-          const ab = await data.arrayBuffer();
-          this.handleBinaryChunk(ab);
-        } catch (e) {
-          console.error('[Protocol] Lỗi đọc Blob chunk:', e);
-        }
-        return;
-      }
-
-      // 2. Dữ liệu nhị phân: ArrayBuffer hoặc Uint8Array/TypedArray
-      if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-        this.handleBinaryChunk(data);
-        return;
-      }
-
-      // 3. Tin nhắn dạng chuỗi JSON
-      if (typeof data === 'string') {
-        try {
-          const parsed = JSON.parse(data);
-          await this.handleMessage(parsed);
-        } catch {
-          // chuỗi thuần
-        }
-        return;
-      }
-
-      // 4. Tin nhắn dạng Object điều khiển (phải có thuộc tính .type)
-      if (data && typeof data === 'object' && typeof data.type === 'string') {
-        await this.handleMessage(data);
-        return;
-      }
-
-      console.warn('[Protocol] Bỏ qua gói tin không nhận diện được:', typeof data, data);
+    this.conn.on('data', (data) => {
+      // Xử lý tuần tự theo hàng đợi để tránh race condition khi nhận nhiều ảnh/file liên tiếp
+      this._receiveQueue = this._receiveQueue
+        .then(() => this.processIncomingData(data))
+        .catch((err) => {
+          console.error('[Protocol] Lỗi xử lý dữ liệu đến:', err);
+        });
     });
 
     this.conn.on('close', () => {
@@ -174,6 +145,44 @@ export class TransferCoordinator {
     this.conn.on('error', (err) => {
       this.onError('Lỗi kết nối WebRTC: ' + (err.message || 'Lỗi mạng'));
     });
+  }
+
+  async processIncomingData(data) {
+    // 1. Dữ liệu nhị phân: Blob
+    if (data instanceof Blob) {
+      try {
+        const ab = await data.arrayBuffer();
+        this.handleBinaryChunk(ab);
+      } catch (e) {
+        console.error('[Protocol] Lỗi đọc Blob chunk:', e);
+      }
+      return;
+    }
+
+    // 2. Dữ liệu nhị phân: ArrayBuffer hoặc Uint8Array/TypedArray
+    if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+      this.handleBinaryChunk(data);
+      return;
+    }
+
+    // 3. Tin nhắn dạng chuỗi JSON
+    if (typeof data === 'string') {
+      try {
+        const parsed = JSON.parse(data);
+        await this.handleMessage(parsed);
+      } catch {
+        // chuỗi thuần
+      }
+      return;
+    }
+
+    // 4. Tin nhắn dạng Object điều khiển (phải có thuộc tính .type)
+    if (data && typeof data === 'object' && typeof data.type === 'string') {
+      await this.handleMessage(data);
+      return;
+    }
+
+    console.warn('[Protocol] Bỏ qua gói tin không nhận diện được:', typeof data, data);
   }
 
   sendMessage(type, payload = {}) {
@@ -238,13 +247,18 @@ export class TransferCoordinator {
         this.sendMessage(PROTOCOL_TYPES.TRANSFER_ACK, { success: true });
         break;
 
-      case PROTOCOL_TYPES.FILE_META:
-        console.log('[Protocol] Bắt đầu nhận file:', msg.name, 'Kích thước dự kiến:', msg.size, 'Chunks:', msg.totalChunks);
+      case PROTOCOL_TYPES.FILE_META: {
+        const idx = msg.fileIndex ?? 0;
+        console.log('[Protocol] Bắt đầu nhận file:', msg.name, 'Index:', idx, 'Kích thước dự kiến:', msg.size, 'Chunks:', msg.totalChunks);
         this.inCurrentFile = msg;
-        this.inChunks = [];
-        this.inBytesCurrentFile = 0;
+        this.inFileStates.set(idx, {
+          meta: msg,
+          chunks: [],
+          receivedBytes: 0
+        });
         this.onStatusChange('receiving', { file: msg });
         break;
+      }
 
       case PROTOCOL_TYPES.FILE_COMPLETE:
         await this.finalizeReceivedFile(msg);
@@ -280,8 +294,14 @@ export class TransferCoordinator {
       return;
     }
 
-    this.inChunks.push(packet.chunkData);
-    this.inBytesCurrentFile += packet.payloadLength;
+    const fileState = this.inFileStates.get(packet.fileIndex);
+    if (!fileState) {
+      console.warn('[Protocol] Nhận chunk cho fileIndex chưa có metadata:', packet.fileIndex);
+      return;
+    }
+
+    fileState.chunks[packet.chunkIndex] = packet.chunkData;
+    fileState.receivedBytes += packet.payloadLength;
     this.inTransferredBytes += packet.payloadLength;
     this.inBytesSinceLastSpeed += packet.payloadLength;
 
@@ -293,8 +313,9 @@ export class TransferCoordinator {
       this.inBytesSinceLastSpeed = 0;
     }
 
-    const currentFileProgress = this.inCurrentFile && this.inCurrentFile.size > 0
-      ? (this.inBytesCurrentFile / this.inCurrentFile.size) * 100
+    const currentFileMeta = fileState.meta;
+    const currentFileProgress = currentFileMeta && currentFileMeta.size > 0
+      ? (fileState.receivedBytes / currentFileMeta.size) * 100
       : 100;
 
     const totalProgress = this.inTotalBytes > 0
@@ -305,7 +326,9 @@ export class TransferCoordinator {
 
     this.onProgress({
       mode: 'receiving',
-      fileName: this.inCurrentFile?.name || 'file',
+      fileIndex: packet.fileIndex,
+      totalFiles: this.inOffer?.itemCount || 1,
+      fileName: currentFileMeta?.name || 'file',
       currentFileProgress,
       totalProgress,
       transferredBytes: this.inTransferredBytes,
@@ -316,21 +339,25 @@ export class TransferCoordinator {
   }
 
   async finalizeReceivedFile(msg) {
-    if (!this.inCurrentFile) return;
+    const idx = msg.fileIndex ?? 0;
+    const fileState = this.inFileStates.get(idx);
+    if (!fileState) return;
 
-    const blob = new Blob(this.inChunks, {
-      type: this.inCurrentFile.mimeType || 'application/octet-stream'
+    const fileMeta = fileState.meta;
+    const orderedChunks = fileState.chunks.filter(Boolean);
+    const blob = new Blob(orderedChunks, {
+      type: fileMeta.mimeType || 'application/octet-stream'
     });
 
-    console.log(`[Protocol] Nhận xong file "${this.inCurrentFile.name}": ${this.inChunks.length} chunks, tổng ${blob.size} bytes`);
+    console.log(`[Protocol] Nhận xong file "${fileMeta.name}" (#${idx}): ${orderedChunks.length} chunks, tổng ${blob.size} bytes`);
 
     let checksumValid = true;
-    if (this.inCurrentFile.checksum && blob.size > 0) {
+    if (fileMeta.checksum && blob.size > 0) {
       try {
         const buffer = await blob.arrayBuffer();
         const calculatedHash = await calculateSha256(buffer);
-        if (calculatedHash && calculatedHash !== this.inCurrentFile.checksum) {
-          console.warn('[Protocol] Mã băm SHA-256 không khớp cho file:', this.inCurrentFile.name);
+        if (calculatedHash && calculatedHash !== fileMeta.checksum) {
+          console.warn('[Protocol] Mã băm SHA-256 không khớp cho file:', fileMeta.name);
           checksumValid = false;
         }
       } catch (err) {
@@ -339,13 +366,15 @@ export class TransferCoordinator {
     }
 
     this.inFiles.push({
-      name: this.inCurrentFile.name,
-      size: blob.size > 0 ? blob.size : (this.inCurrentFile.size || 0),
-      mimeType: this.inCurrentFile.mimeType,
+      name: fileMeta.name,
+      size: blob.size > 0 ? blob.size : (fileMeta.size || 0),
+      mimeType: fileMeta.mimeType || 'application/octet-stream',
       blob,
       url: URL.createObjectURL(blob),
       checksumValid
     });
+
+    this.inFileStates.delete(idx);
 
     if (msg.isLastFile) {
       this.isReceiving = false;
@@ -380,6 +409,7 @@ export class TransferCoordinator {
   acceptOffer() {
     this.isReceiving = true;
     this.inFiles = [];
+    this.inFileStates.clear();
     this.inLastSpeedUpdate = Date.now();
     this.inBytesSinceLastSpeed = 0;
     this.sendMessage(PROTOCOL_TYPES.CONTENT_ACCEPT);
@@ -508,6 +538,8 @@ export class TransferCoordinator {
 
       this.onProgress({
         mode: 'sending',
+        fileIndex,
+        totalFiles: this.outLocalFiles.length || 1,
         fileName: fileItem.name || file.name,
         currentFileProgress,
         totalProgress,

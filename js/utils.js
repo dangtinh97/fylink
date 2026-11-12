@@ -100,6 +100,30 @@ export function sanitizeFilename(filename) {
 }
 
 /**
+ * Ensure unique filename among existing names (e.g., image.png -> image (2).png)
+ */
+export function deduplicateFilename(filename, existingNames) {
+  const clean = sanitizeFilename(filename);
+  if (!existingNames.has(clean)) {
+    existingNames.add(clean);
+    return clean;
+  }
+
+  const dotIdx = clean.lastIndexOf('.');
+  const base = dotIdx > 0 ? clean.slice(0, dotIdx) : clean;
+  const ext = dotIdx > 0 ? clean.slice(dotIdx) : '';
+
+  let counter = 2;
+  let candidate = `${base} (${counter})${ext}`;
+  while (existingNames.has(candidate)) {
+    counter++;
+    candidate = `${base} (${counter})${ext}`;
+  }
+  existingNames.add(candidate);
+  return candidate;
+}
+
+/**
  * Calculate SHA-256 hash of an ArrayBuffer
  */
 export async function calculateSha256(arrayBuffer) {
@@ -168,17 +192,17 @@ export function generateVideoThumbnail(file, seekTime = 1.0) {
 }
 
 /**
- * Generate an image thumbnail (max 320px)
+ * Generate an image thumbnail (max 320px) using ObjectURL for low memory usage
  */
 export function generateImageThumbnail(file) {
   return new Promise((resolve) => {
     if (!file.type.startsWith('image/')) {
       return resolve(null);
     }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
         const canvas = document.createElement('canvas');
         const maxDim = 320;
         let w = img.width;
@@ -196,17 +220,21 @@ export function generateImageThumbnail(file) {
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, w, h);
-        resolve({
-          thumbnail: canvas.toDataURL('image/jpeg', 0.8),
-          width: img.width,
-          height: img.height
-        });
-      };
-      img.onerror = () => resolve(null);
-      img.src = e.target.result;
+        const thumbnail = canvas.toDataURL('image/jpeg', 0.8);
+        const width = img.width;
+        const height = img.height;
+        URL.revokeObjectURL(objectUrl);
+        resolve({ thumbnail, width, height });
+      } catch {
+        URL.revokeObjectURL(objectUrl);
+        resolve(null);
+      }
     };
-    reader.onerror = () => resolve(null);
-    reader.readAsDataURL(file);
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(null);
+    };
+    img.src = objectUrl;
   });
 }
 
